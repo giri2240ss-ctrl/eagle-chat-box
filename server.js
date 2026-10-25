@@ -61,21 +61,28 @@ app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, express.j
   }
 
   try {
-    const model = GEMINI_MODEL || 'gemini-2.5-flash-lite';
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'x-goog-api-key': GEMINI_API_KEY || '', 'content-type': 'application/json' },
-      body: JSON.stringify({
+    const payload = JSON.stringify({
         systemInstruction: { parts: [{ text: `You are Eagle AI, a helpful, accurate and friendly assistant. The user's name is ${req.user.name}. Always reply in the same language as the user's latest message, whatever that language is (English, Tamil, Hindi, Telugu, Malayalam, Kannada, Arabic, Spanish, French, Chinese and any other). Match the writing style too: if the user writes in their own script, reply in that script; if they write in English letters (like Tanglish or Hinglish), reply in natural, correctly spelled romanized text of that language. For voice messages, reply in the language that was spoken. If a message has no text (only a photo or video), use the language of the user's earlier messages, or English if there are none. Never invent odd words or mix languages unnaturally. Give correct and useful answers: explain clearly, stay concise unless the user asks for detail, use short paragraphs or simple lists, and use plain text without markdown symbols.` }] },
-        generationConfig: { temperature: 0.6 },
         contents: messages.map((m, i) => {
           if (inline && i === messages.length - 1) return { role: 'user', parts: [{ inlineData: { mimeType: inline.mime, data: inline.data } }, { text: m.content || DEFAULT_PROMPT[inline.mime.split('/')[0]] }] };
           return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content || '.' }] };
         })
-      })
     });
-    const d = await r.json();
-    if (!r.ok) throw new Error((d.error && d.error.message) || 'API error ' + r.status);
+    const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(Boolean))];
+    let d = null, last = 0;
+    for (const model of models) {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'x-goog-api-key': GEMINI_API_KEY || '', 'content-type': 'application/json' },
+        body: payload
+      });
+      const j = await r.json().catch(() => ({}));
+      last = r.status;
+      if (r.ok) { d = j; console.log('Gemini model used:', model); break; }
+      console.error('Gemini error', model, r.status, (j.error && j.error.message) || '');
+      if (![404, 429, 500, 503].includes(r.status)) break;
+    }
+    if (!d) return res.status(last === 429 ? 429 : 502).json({ error: last === 429 ? 'Free AI limit nirambiduchu. Oru nimisham kalichu try pannu.' : 'AI konjam busy. Thirumba try pannu.' });
     const parts = (d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [];
     const text = parts.map(p => p.text || '').join('');
     res.json({ text: text || 'Pathil varala machi, thirumba try pannu.' });
