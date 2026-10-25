@@ -69,23 +69,42 @@ app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, express.j
         })
     });
     const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(Boolean))];
-    let d = null, last = 0;
+    let up = null, last = 0;
     for (const model of models) {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
         method: 'POST',
         headers: { 'x-goog-api-key': GEMINI_API_KEY || '', 'content-type': 'application/json' },
         body: payload
       });
-      const j = await r.json().catch(() => ({}));
       last = r.status;
-      if (r.ok) { d = j; console.log('Gemini model used:', model); break; }
-      console.error('Gemini error', model, r.status, (j.error && j.error.message) || '');
+      if (r.ok) { up = r; console.log('Gemini model used:', model); break; }
+      let msg = ''; try { const j = await r.json(); msg = (j.error && j.error.message) || ''; } catch (e) {}
+      console.error('Gemini error', model, r.status, msg);
       if (![404, 429, 500, 503].includes(r.status)) break;
     }
-    if (!d) return res.status(last === 429 ? 429 : 502).json({ error: last === 429 ? 'Free AI limit nirambiduchu. Oru nimisham kalichu try pannu.' : 'AI konjam busy. Thirumba try pannu.' });
-    const parts = (d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || [];
-    const text = parts.map(p => p.text || '').join('');
-    res.json({ text: text || 'Pathil varala machi, thirumba try pannu.' });
+    if (!up) return res.status(last === 429 ? 429 : 502).json({ error: last === 429 ? 'Free AI limit nirambiduchu. Oru nimisham kalichu try pannu.' : 'AI konjam busy. Thirumba try pannu.' });
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+    const dec = new TextDecoder();
+    let buf = '', sent = false;
+    try {
+      for await (const chunk of up.body) {
+        buf += dec.decode(chunk, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+          if (!line.startsWith('data:')) continue;
+          let j; try { j = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
+          const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+          const t = parts.map(p => (p.thought ? '' : (p.text || ''))).join('');
+          if (t) { res.write(t); sent = true; }
+        }
+      }
+    } catch (e) { console.error('stream error', e.message); }
+    if (!sent) res.write('Pathil varala machi, thirumba try pannu.');
+    res.end();
   } catch (e) {
     console.error(e.message);
     res.status(502).json({ error: 'AI konjam busy. Thirumba try pannu.' });

@@ -294,15 +294,18 @@ $('mic').addEventListener('click', async function () {
     rec = mr; mr.start(); $('mic').classList.add('on');
   } catch (e) { note('Mic permission allow pannu machi.'); }
 });
-async function callChat(media, text) {
+async function callChat(media, text, onText) {
   for (var i = 0; i < 2; i++) {
     var h = history(); if (media && h.length) h[h.length - 1].content = text;
     var r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + auth.idToken }, body: JSON.stringify({ messages: h, media: media || null }) });
-    var d = {}; try { d = await r.json(); } catch (e) {}
     if (r.status === 401 && i === 0) { try { await refresh(); continue; } catch (e) {} }
     if (r.status === 401) { var er = new Error('Session expire aaiduchu. Thirumba login pannu.'); er.auth = true; throw er; }
-    if (!r.ok) throw new Error(d.error || 'Something went wrong. Thirumba try pannu.');
-    return d.text;
+    if (!r.ok) { var d = {}; try { d = await r.json(); } catch (e) {} throw new Error(d.error || 'Something went wrong. Thirumba try pannu.'); }
+    var full = '';
+    if (!r.body || !r.body.getReader) { full = await r.text(); if (onText) onText(full); return full; }
+    var rd = r.body.getReader(), dec = new TextDecoder();
+    for (;;) { var x = await rd.read(); if (x.done) break; full += dec.decode(x.value, { stream: true }); if (onText) onText(full); }
+    return full;
   }
 }
 async function send(text) {
@@ -313,7 +316,7 @@ async function send(text) {
   msgs.push({ role: 'user', content: text, media: att ? { kind: att.kind, url: att.url } : undefined }); render();
   var out = bubble('bot', '…'); toBottom();
   var reply = '', expired = false;
-  try { reply = await callChat(att ? { mime: att.mime, data: att.b64 } : null, text); } catch (e) { reply = e.message || 'Something went wrong. Thirumba try pannu.'; expired = !!e.auth; }
+  try { reply = await callChat(att ? { mime: att.mime, data: att.b64 } : null, text, function (t) { out.textContent = t; toBottom(); }); } catch (e) { reply = e.message || 'Something went wrong. Thirumba try pannu.'; expired = !!e.auth; }
   out.textContent = reply; msgs.push({ role: 'assistant', content: reply }); saveChat(); toBottom();
   busy = false; sendBtn.disabled = false;
   if (expired) setTimeout(logout, 1800);
