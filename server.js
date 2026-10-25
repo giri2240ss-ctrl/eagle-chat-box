@@ -6,7 +6,6 @@ const { PORT = 3000, FIREBASE_API_KEY, GEMINI_API_KEY, GEMINI_MODEL } = process.
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '50kb' }));
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/api/config', (req, res) => res.json({ key: FIREBASE_API_KEY || '' }));
@@ -34,9 +33,14 @@ async function verify(req, res, next) {
   next();
 }
 
+const DEFAULT_PROMPT = {
+  image: 'Describe this image and help the user with it.',
+  video: 'Watch this video and describe what happens in it.',
+  audio: 'The user sent this voice message. Listen to it and reply to what they said, in the same language.'
+};
 const usage = new Map(); // daily message cap per user (protects the free quota)
 
-app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, async (req, res) => {
+app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, express.json({ limit: '30mb' }), async (req, res) => {
   const cap = req.user.guest ? 20 : 50;
   const dayKey = req.user.uid + new Date().toISOString().slice(0, 10);
   usage.set(dayKey, (usage.get(dayKey) || 0) + 1);
@@ -47,6 +51,15 @@ app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, async (re
   while (messages.length && messages[0].role !== 'user') messages.shift();
   if (!messages.length || messages[messages.length - 1].role !== 'user') return res.status(400).json({ error: 'Bad request.' });
 
+  let inline = null;
+  const media = req.body.media;
+  if (media && media.data) {
+    const mime = String(media.mime || '').toLowerCase().replace('video/quicktime', 'video/mov');
+    if (!/^(image\/(jpeg|png|webp|heic|heif)|video\/(mp4|mpeg|mov|webm|3gpp|avi|wmv|x-flv)|audio\/(wav|mp3|aac|ogg|flac|aiff))$/.test(mime)) return res.status(400).json({ error: 'Indha file type support illa.' });
+    if (String(media.data).length > 27e6) return res.status(413).json({ error: 'File romba periya machi (max 20MB).' });
+    inline = { mime, data: String(media.data) };
+  }
+
   try {
     const model = GEMINI_MODEL || 'gemini-2.5-flash-lite';
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -54,7 +67,10 @@ app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, async (re
       headers: { 'x-goog-api-key': GEMINI_API_KEY || '', 'content-type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: `You are Eagle AI, a friendly AI assistant. The user's name is ${req.user.name}. Reply in the language the user writes in (Tanglish is fine). Keep answers short and clear, in plain text.` }] },
-        contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }))
+        contents: messages.map((m, i) => {
+          if (inline && i === messages.length - 1) return { role: 'user', parts: [{ inlineData: { mimeType: inline.mime, data: inline.data } }, { text: m.content || DEFAULT_PROMPT[inline.mime.split('/')[0]] }] };
+          return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content || '.' }] };
+        })
       })
     });
     const d = await r.json();

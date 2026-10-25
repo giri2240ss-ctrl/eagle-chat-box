@@ -56,6 +56,17 @@ form.auth{padding:0 36px;margin-top:56px}
 #cform textarea:focus{outline:3px solid #8DB4F2;outline-offset:1px}
 .send{width:46px;height:46px;border:0;border-radius:50%;background:#000;color:#fff;display:grid;place-items:center;flex:none}
 .send:disabled{opacity:.5}
+
+.mi{display:block;max-width:100%;max-height:280px;border-radius:12px;margin-bottom:6px}
+audio.mi{width:240px;max-width:100%}
+#pend{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid #E3E8F2}
+#pendInfo{flex:1;min-width:0;font-size:14px}
+#pendInfo img{height:64px;border-radius:10px;display:block}
+#pendInfo audio{width:100%}
+#pendX{width:40px;height:40px;border:0;border-radius:50%;background:var(--soft);font-size:22px;line-height:1}
+#cnote{margin:0;padding:0 14px;min-height:0;text-align:left}
+#cform .side{width:46px;height:46px;border:1.5px solid var(--blue);border-radius:50%;background:#fff;color:var(--blue);display:grid;place-items:center;flex:none}
+#cform .side.on{background:#B3261E;color:#fff;border-color:#B3261E}
 </style>
 </head>
 <body>
@@ -102,7 +113,9 @@ form.auth{padding:0 36px;margin-top:56px}
 <button class="ib" id="logout" type="button" aria-label="Log out"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"></path></svg></button>
 </header>
 <div id="list" aria-live="polite"></div>
-<form id="cform"><textarea id="input" rows="1" placeholder="Message Eagle AI…" aria-label="Message"></textarea><button class="send" id="send" type="submit" aria-label="Send"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button></form>
+<p id="cnote" class="err" role="alert"></p>
+<div id="pend" hidden><div id="pendInfo"></div><button id="pendX" type="button" aria-label="Remove attachment">&times;</button></div>
+<form id="cform"><input id="file" type="file" accept="image/*,video/*" hidden><button class="side" id="attach" type="button" aria-label="Attach photo or video"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"></path></svg></button><textarea id="input" rows="1" placeholder="Message Eagle AI…" aria-label="Message"></textarea><button class="side" id="mic" type="button" aria-label="Record voice message"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg></button><button class="send" id="send" type="submit" aria-label="Send"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button></form>
 </div>
 
 <script>
@@ -187,28 +200,104 @@ $('loginForm').addEventListener('submit', function (e) {
 });
 
 var list = $('list'), input = $('input'), sendBtn = $('send');
-function saveChat() { try { localStorage.setItem(KEY, JSON.stringify(msgs.slice(-40))); } catch (e) {} }
+var pending = null, rec = null;
+var LABEL = { image: 'Photo', video: 'Video', audio: 'Voice message' };
+function saveChat() { try { localStorage.setItem(KEY, JSON.stringify(msgs.slice(-40).map(function (m) { return { role: m.role, content: m.content, media: m.media ? { kind: m.media.kind } : undefined }; }))); } catch (e) {} }
 function toBottom() { list.scrollTop = list.scrollHeight; }
-function bubble(role, text) { var d = document.createElement('div'); d.className = 'msg ' + (role === 'user' ? 'user' : 'bot'); d.textContent = text; list.appendChild(d); return d; }
+function note(t) { $('cnote').textContent = t || ''; }
+function bubble(role, text, m) {
+  var d = document.createElement('div'); d.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+  if (m) {
+    var el;
+    if (m.url && m.kind === 'image') { el = document.createElement('img'); el.src = m.url; el.alt = 'Photo'; }
+    else if (m.url && m.kind === 'video') { el = document.createElement('video'); el.src = m.url; el.controls = true; el.playsInline = true; el.preload = 'metadata'; }
+    else if (m.url && m.kind === 'audio') { el = document.createElement('audio'); el.src = m.url; el.controls = true; }
+    else { el = document.createElement('div'); el.textContent = '[' + (LABEL[m.kind] || 'File') + ']'; }
+    el.className = 'mi'; d.appendChild(el);
+  }
+  if (text) { var s = document.createElement('div'); s.textContent = text; d.appendChild(s); }
+  list.appendChild(d); return d;
+}
 function welcomeBox() {
   var w = document.createElement('div'); w.className = 'welcome';
-  w.innerHTML = '<h2></h2><p>Enna venum machi? Kelu!</p><div class="chips"></div>';
+  w.innerHTML = '<h2></h2><p>Enna venum machi? Kelu!</p>';
   w.querySelector('h2').textContent = 'Hi, ' + (auth && auth.name || 'friend') + '!';
-  ['Tamil la oru joke sollu', 'Python learn panna plan kudu', 'Oru email draft panna help pannu'].forEach(function (t) {
-    var b = document.createElement('button'); b.type = 'button'; b.className = 'chip'; b.textContent = t;
-    b.addEventListener('click', function () { send(t); }); w.querySelector('.chips').appendChild(b);
-  });
   list.appendChild(w);
 }
-function render() { list.textContent = ''; if (!msgs.length) { welcomeBox(); return; } msgs.forEach(function (m) { bubble(m.role, m.content); }); toBottom(); }
+function render() { list.textContent = ''; if (!msgs.length) { welcomeBox(); return; } msgs.forEach(function (m) { bubble(m.role, m.content, m.media); }); toBottom(); }
 function history() {
-  var a = msgs.slice(-20).map(function (m) { return { role: m.role, content: m.content }; });
+  var a = msgs.slice(-20).map(function (m) { return { role: m.role, content: m.content || (m.media ? '[' + (LABEL[m.media.kind] || 'File') + ']' : '') }; });
   while (a.length && a[0].role !== 'user') a.shift();
   return a;
 }
-async function callChat() {
+function b64of(b) { return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(String(r.result).split(',')[1]); }; r.onerror = rej; r.readAsDataURL(b); }); }
+async function shrink(f) {
+  var bmp = await createImageBitmap(f);
+  var s = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+  var c = document.createElement('canvas'); c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return await new Promise(function (res) { c.toBlob(res, 'image/jpeg', 0.82); });
+}
+async function toWav(blob) {
+  var ctx = new (window.AudioContext || window.webkitAudioContext)();
+  var dec = await ctx.decodeAudioData(await blob.arrayBuffer());
+  if (ctx.close) ctx.close();
+  var off = new OfflineAudioContext(1, Math.max(1, Math.ceil(dec.duration * 16000)), 16000);
+  var src = off.createBufferSource(); src.buffer = dec; src.connect(off.destination); src.start();
+  var pcm = (await off.startRendering()).getChannelData(0);
+  var v = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  function w(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 16000, true); v.setUint32(28, 32000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  for (var i = 0; i < pcm.length; i++) { var x = Math.max(-1, Math.min(1, pcm[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7FFF, true); }
+  return new Blob([v], { type: 'audio/wav' });
+}
+function showPending() {
+  var box = $('pendInfo'); box.textContent = '';
+  if (!pending) { $('pend').hidden = true; return; }
+  var el;
+  if (pending.kind === 'image') { el = document.createElement('img'); el.src = pending.url; el.alt = 'Photo'; }
+  else if (pending.kind === 'audio') { el = document.createElement('audio'); el.src = pending.url; el.controls = true; }
+  else { el = document.createElement('span'); el.textContent = 'Video: ' + pending.name; }
+  box.appendChild(el); $('pend').hidden = false;
+}
+$('attach').addEventListener('click', function () { if (!busy && !rec) $('file').click(); });
+$('pendX').addEventListener('click', function () { pending = null; showPending(); });
+$('file').addEventListener('change', async function () {
+  var f = this.files && this.files[0]; this.value = '';
+  if (!f) return;
+  note('');
+  try {
+    if (f.type.indexOf('image/') === 0) { var b = await shrink(f); pending = { kind: 'image', mime: 'image/jpeg', b64: await b64of(b), url: URL.createObjectURL(b), name: f.name }; }
+    else if (f.type.indexOf('video/') === 0) {
+      if (f.size > 14 * 1024 * 1024) throw new Error('Video romba periya machi. 14MB ku kuraiva (20-30 seconds) anuppu.');
+      pending = { kind: 'video', mime: f.type, b64: await b64of(f), url: URL.createObjectURL(f), name: f.name };
+    } else { throw new Error('Photo illa video mattum anuppalaam.'); }
+    showPending();
+  } catch (e) { note(e.message || 'File edukka mudiyala.'); }
+});
+$('mic').addEventListener('click', async function () {
+  if (rec) { rec.stop(); return; }
+  if (busy) return;
+  note('');
+  try {
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    var chunks = [], mr = new MediaRecorder(stream), t0 = Date.now();
+    var tick = setInterval(function () { var s = Math.floor((Date.now() - t0) / 1000); note('Recording... ' + s + 's. Mic tap panna stop aagum.'); if (s >= 60) mr.stop(); }, 400);
+    mr.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = async function () {
+      clearInterval(tick); stream.getTracks().forEach(function (t) { t.stop(); });
+      rec = null; $('mic').classList.remove('on'); note('');
+      try { var wav = await toWav(new Blob(chunks, { type: mr.mimeType })); pending = { kind: 'audio', mime: 'audio/wav', b64: await b64of(wav), url: URL.createObjectURL(wav), name: 'voice' }; showPending(); }
+      catch (e) { note('Voice process panna mudiyala. Thirumba try pannu.'); }
+    };
+    rec = mr; mr.start(); $('mic').classList.add('on');
+  } catch (e) { note('Mic permission allow pannu machi.'); }
+});
+async function callChat(media, text) {
   for (var i = 0; i < 2; i++) {
-    var r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + auth.idToken }, body: JSON.stringify({ messages: history() }) });
+    var h = history(); if (media && h.length) h[h.length - 1].content = text;
+    var r = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + auth.idToken }, body: JSON.stringify({ messages: h, media: media || null }) });
     var d = {}; try { d = await r.json(); } catch (e) {}
     if (r.status === 401 && i === 0) { try { await refresh(); continue; } catch (e) {} }
     if (r.status === 401) { var er = new Error('Session expire aaiduchu. Thirumba login pannu.'); er.auth = true; throw er; }
@@ -218,12 +307,13 @@ async function callChat() {
 }
 async function send(text) {
   text = (text || '').trim();
-  if (!text || busy) return;
-  busy = true; sendBtn.disabled = true;
-  msgs.push({ role: 'user', content: text }); render();
+  var att = pending;
+  if ((!text && !att) || busy) return;
+  busy = true; sendBtn.disabled = true; pending = null; showPending(); note('');
+  msgs.push({ role: 'user', content: text, media: att ? { kind: att.kind, url: att.url } : undefined }); render();
   var out = bubble('bot', '…'); toBottom();
   var reply = '', expired = false;
-  try { reply = await callChat(); } catch (e) { reply = e.message || 'Something went wrong. Thirumba try pannu.'; expired = !!e.auth; }
+  try { reply = await callChat(att ? { mime: att.mime, data: att.b64 } : null, text); } catch (e) { reply = e.message || 'Something went wrong. Thirumba try pannu.'; expired = !!e.auth; }
   out.textContent = reply; msgs.push({ role: 'assistant', content: reply }); saveChat(); toBottom();
   busy = false; sendBtn.disabled = false;
   if (expired) setTimeout(logout, 1800);
