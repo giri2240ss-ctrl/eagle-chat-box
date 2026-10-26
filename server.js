@@ -7,7 +7,7 @@ const { PORT = 3000, FIREBASE_API_KEY, GEMINI_API_KEY, GEMINI_MODEL } = process.
 const app = express();
 app.set('trust proxy', 1);
 
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/', (req, res) => { res.set('Cache-Control', 'no-store'); res.sendFile(path.join(__dirname, 'index.html')); });
 app.get('/api/config', (req, res) => res.json({ key: FIREBASE_API_KEY || '' }));
 
 // Verify the Firebase login token (Google checks the password / guest session for us)
