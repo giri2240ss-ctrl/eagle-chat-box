@@ -1,120 +1,56 @@
-const express = require('express');
-const path = require('path');
-const rateLimit = require('express-rate-limit');
-
-const { PORT = 3000, FIREBASE_API_KEY, GEMINI_API_KEY, GEMINI_MODEL } = process.env;
-
+const express = require('express'), crypto = require('crypto'), path = require('path');
+const { ANTHROPIC_API_KEY: AK, FIREBASE_API_KEY: FK, SESSION_SECRET: SS } = process.env;
+const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
+const SYS = "You are Eagle AI, a friendly, sharp assistant. Reply in the user's language. If they write Tanglish (Tamil in English letters), reply in casual Tanglish with a warm 'machi' vibe. Keep answers short.";
 const app = express();
 app.set('trust proxy', 1);
+app.use(express.json({ limit: '1mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/', (req, res) => { res.set('Cache-Control', 'no-store'); res.sendFile(path.join(__dirname, 'index.html')); });
-app.get('/api/config', (req, res) => res.json({ key: FIREBASE_API_KEY || '' }));
+// --- signed session tokens (30 days) ---
+const sign = p => { const d = Buffer.from(JSON.stringify(p)).toString('base64url'); return d + '.' + crypto.createHmac('sha256', SS).update(d).digest('base64url'); };
+const verify = t => { try { const [d, s] = String(t).split('.'); const e = crypto.createHmac('sha256', SS).update(d).digest('base64url');
+  if (!s || s.length !== e.length || !crypto.timingSafeEqual(Buffer.from(s), Buffer.from(e))) return null;
+  const p = JSON.parse(Buffer.from(d, 'base64url')); return p.exp > Date.now() ? p : null; } catch { return null; } };
+const issue = (name, email) => ({ token: sign({ name, email, exp: Date.now() + 30 * 864e5 }), user: { name, email } });
 
-// Verify the Firebase login token (Google checks the password / guest session for us)
-const cache = new Map();
-async function verify(req, res, next) {
-  const tok = (req.headers.authorization || '').slice(7);
-  if (!tok || !FIREBASE_API_KEY) return res.status(401).json({ error: 'Login venum.' });
-  let c = cache.get(tok);
-  if (!c || c.exp < Date.now()) {
-    try {
-      const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ idToken: tok })
-      });
-      const d = await r.json();
-      const u = r.ok && d.users && d.users[0];
-      if (!u) return res.status(401).json({ error: 'Login venum.' });
-      c = { uid: u.localId, name: u.displayName || 'friend', guest: !u.email, exp: Date.now() + 5 * 60000 };
-      if (cache.size > 1000) cache.clear();
-      cache.set(tok, c);
-    } catch (e) { return res.status(401).json({ error: 'Login venum.' }); }
-  }
-  req.user = c;
-  next();
-}
+const need = (...k) => (req, res, next) => { const m = k.find(x => !process.env[x]); m ? res.status(500).json({ error: `Server setup pending (${m}).` }) : next(); };
+const auth = (req, res, next) => { const p = verify((req.headers.authorization || '').replace('Bearer ', '')); if (!p) return res.status(401).json({ error: 'Login pannu machi.' }); req.u = p; next(); };
+const hits = new Map();
+const limit = (req, res, next) => { const k = req.u.email === 'guest' ? req.ip : req.u.email, now = Date.now();
+  const a = (hits.get(k) || []).filter(t => now - t < 6e4); if (a.length >= 20) return res.status(429).json({ error: 'Romba fast machi, oru nimisham wait pannu.' });
+  a.push(now); hits.set(k, a); next(); };
 
-const DEFAULT_PROMPT = {
-  image: 'Describe this image and help the user with it.',
-  video: 'Watch this video and describe what happens in it.',
-  audio: 'The user sent this voice message. Listen to it and reply to what they said, in the same language.'
-};
-const usage = new Map(); // daily message cap per user (protects the free quota)
+// --- Firebase Auth via REST ---
+const fb = async (ep, body) => { const r = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:${ep}?key=${FK}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json(); if (!r.ok) throw new Error((j.error && j.error.message || 'ERROR').split(' ')[0]); return j; };
+const FBMSG = { EMAIL_EXISTS: 'Email already registered. Login pannu.', INVALID_LOGIN_CREDENTIALS: 'Email illa password thappu machi.', INVALID_PASSWORD: 'Email illa password thappu machi.', EMAIL_NOT_FOUND: 'Email illa password thappu machi.', WEAK_PASSWORD: 'Password minimum 6 characters.', INVALID_EMAIL: 'Valid email kudu.', TOO_MANY_ATTEMPTS_TRY_LATER: 'Romba attempts, konjam neram kazhichu try pannu.', OPERATION_NOT_ALLOWED: 'Firebase-la Email/Password sign-in enable pannala.' };
+const fail = (res, e) => res.status(400).json({ error: FBMSG[e.message] || 'Etho problem aachu, marubadi try pannu.' });
 
-app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, express.json({ limit: '30mb' }), async (req, res) => {
-  const cap = req.user.guest ? 20 : 50;
-  const dayKey = req.user.uid + new Date().toISOString().slice(0, 10);
-  usage.set(dayKey, (usage.get(dayKey) || 0) + 1);
-  if (usage.get(dayKey) > cap) return res.status(429).json({ error: `Indru ${cap} messages limit mudinjuduchu. Naalaikku vaa machi.` });
+app.post('/api/signup', need('FIREBASE_API_KEY', 'SESSION_SECRET'), async (req, res) => {
+  try { const name = String(req.body.name || '').trim().slice(0, 60), email = String(req.body.email || '').trim().toLowerCase(), password = String(req.body.password || '');
+    if (!name) return res.status(400).json({ error: 'Name kudu machi.' });
+    const j = await fb('signUp', { email, password, returnSecureToken: true });
+    await fb('update', { idToken: j.idToken, displayName: name, returnSecureToken: false });
+    res.json(issue(name, email)); } catch (e) { fail(res, e); } });
 
-  const messages = (Array.isArray(req.body.messages) ? req.body.messages : []).slice(-20)
-    .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '').slice(0, 4000) }));
-  while (messages.length && messages[0].role !== 'user') messages.shift();
-  if (!messages.length || messages[messages.length - 1].role !== 'user') return res.status(400).json({ error: 'Bad request.' });
+app.post('/api/login', need('FIREBASE_API_KEY', 'SESSION_SECRET'), async (req, res) => {
+  try { const email = String(req.body.email || '').trim().toLowerCase();
+    const j = await fb('signInWithPassword', { email, password: String(req.body.password || ''), returnSecureToken: true });
+    res.json(issue(j.displayName || email.split('@')[0], email)); } catch (e) { fail(res, e); } });
 
-  let inline = null;
-  const media = req.body.media;
-  if (media && media.data) {
-    const mime = String(media.mime || '').toLowerCase().replace('video/quicktime', 'video/mov');
-    if (!/^(image\/(jpeg|png|webp|heic|heif)|video\/(mp4|mpeg|mov|webm|3gpp|avi|wmv|x-flv)|audio\/(wav|mp3|aac|ogg|flac|aiff))$/.test(mime)) return res.status(400).json({ error: 'Indha file type support illa.' });
-    if (String(media.data).length > 27e6) return res.status(413).json({ error: 'File romba periya machi (max 20MB).' });
-    inline = { mime, data: String(media.data) };
-  }
+app.post('/api/guest', need('SESSION_SECRET'), (req, res) => res.json(issue('Guest', 'guest')));
 
-  try {
-    const payload = JSON.stringify({
-        systemInstruction: { parts: [{ text: `You are Eagle AI, a helpful, accurate and friendly assistant. The user's name is ${req.user.name}. Always reply in the same language as the user's latest message, whatever that language is (English, Tamil, Hindi, Telugu, Malayalam, Kannada, Arabic, Spanish, French, Chinese and any other). Match the writing style too: if the user writes in their own script, reply in that script; if they write in English letters (like Tanglish or Hinglish), reply in natural, correctly spelled romanized text of that language. For voice messages, reply in the language that was spoken. If a message has no text (only a photo or video), use the language of the user's earlier messages, or English if there are none. Never invent odd words or mix languages unnaturally. Give correct and useful answers: explain clearly, stay concise unless the user asks for detail, use short paragraphs or simple lists, and use plain text without markdown symbols.` }] },
-        contents: messages.map((m, i) => {
-          if (inline && i === messages.length - 1) return { role: 'user', parts: [{ inlineData: { mimeType: inline.mime, data: inline.data } }, { text: m.content || DEFAULT_PROMPT[inline.mime.split('/')[0]] }] };
-          return { role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content || '.' }] };
-        })
-    });
-    const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(Boolean))];
-    let up = null, last = 0, lastMsg = '';
-    for (const model of models) {
-      let r;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
-          method: 'POST',
-          headers: { 'x-goog-api-key': GEMINI_API_KEY || '', 'content-type': 'application/json' },
-          body: payload
-        });
-        if (r.status !== 503) break;
-        await new Promise(ok => setTimeout(ok, 1500));
-      }
-      last = r.status;
-      if (r.ok) { up = r; console.log('Gemini model used:', model); break; }
-      let msg = ''; try { const j = await r.json(); msg = (j.error && j.error.message) || ''; } catch (e) {}
-      lastMsg = msg;
-      console.error('Gemini error', model, r.status, msg);
-      if (![404, 429, 500, 503].includes(r.status)) break;
-    }
-    if (!up) return res.status(last === 429 ? 429 : 502).json({ error: last === 429 ? 'Free AI limit nirambiduchu. Oru nimisham kalichu try pannu.' : 'AI konjam busy. Thirumba try pannu. (' + last + (lastMsg ? ': ' + lastMsg.slice(0, 110) : '') + ')' });
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-    const dec = new TextDecoder();
-    let buf = '', sent = false;
-    try {
-      for await (const chunk of up.body) {
-        buf += dec.decode(chunk, { stream: true });
-        let i;
-        while ((i = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-          if (!line.startsWith('data:')) continue;
-          let j; try { j = JSON.parse(line.slice(5).trim()); } catch (e) { continue; }
-          const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
-          const t = parts.map(p => (p.thought ? '' : (p.text || ''))).join('');
-          if (t) { res.write(t); sent = true; }
-        }
-      }
-    } catch (e) { console.error('stream error', e.message); }
-    if (!sent) res.write('Pathil varala machi, thirumba try pannu.');
-    res.end();
-  } catch (e) {
-    console.error(e.message);
-    res.status(502).json({ error: 'AI konjam busy. Thirumba try pannu.' });
-  }
-});
+// --- Claude proxy (key never leaves the server) ---
+app.post('/api/chat', need('ANTHROPIC_API_KEY', 'SESSION_SECRET'), auth, limit, async (req, res) => {
+  try { let { messages, max_tokens, raw } = req.body;
+    if (!Array.isArray(messages) || !messages.length) return res.status(400).json({ error: 'Message illa.' });
+    messages = messages.slice(-30).map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content).slice(0, 8000) }));
+    const body = { model: MODEL, max_tokens: Math.min(+max_tokens || 1024, 4096), messages }; if (!raw) body.system = SYS;
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': AK, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json(); if (!r.ok) { console.error('Anthropic', r.status, j); return res.status(502).json({ error: 'AI busy machi, marubadi try pannu.' }); }
+    res.json({ text: j.content.filter(c => c.type === 'text').map(c => c.text).join('') });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Server problem aachu.' }); } });
 
-app.listen(PORT, () => console.log(`Eagle AI running on http://localhost:${PORT}`));
+app.get('/health', (q, r) => r.send('ok'));
+app.listen(process.env.PORT || 3000, () => console.log('Eagle AI running'));
