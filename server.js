@@ -69,20 +69,26 @@ app.post('/api/chat', rateLimit({ windowMs: 60000, max: 30 }), verify, express.j
         })
     });
     const models = [...new Set([GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(Boolean))];
-    let up = null, last = 0;
+    let up = null, last = 0, lastMsg = '';
     for (const model of models) {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
-        method: 'POST',
-        headers: { 'x-goog-api-key': GEMINI_API_KEY || '', 'content-type': 'application/json' },
-        body: payload
-      });
+      let r;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`, {
+          method: 'POST',
+          headers: { 'x-goog-api-key': GEMINI_API_KEY || '', 'content-type': 'application/json' },
+          body: payload
+        });
+        if (r.status !== 503) break;
+        await new Promise(ok => setTimeout(ok, 1500));
+      }
       last = r.status;
       if (r.ok) { up = r; console.log('Gemini model used:', model); break; }
       let msg = ''; try { const j = await r.json(); msg = (j.error && j.error.message) || ''; } catch (e) {}
+      lastMsg = msg;
       console.error('Gemini error', model, r.status, msg);
       if (![404, 429, 500, 503].includes(r.status)) break;
     }
-    if (!up) return res.status(last === 429 ? 429 : 502).json({ error: last === 429 ? 'Free AI limit nirambiduchu. Oru nimisham kalichu try pannu.' : 'AI konjam busy. Thirumba try pannu.' });
+    if (!up) return res.status(last === 429 ? 429 : 502).json({ error: last === 429 ? 'Free AI limit nirambiduchu. Oru nimisham kalichu try pannu.' : 'AI konjam busy. Thirumba try pannu. (' + last + (lastMsg ? ': ' + lastMsg.slice(0, 110) : '') + ')' });
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('X-Accel-Buffering', 'no');
