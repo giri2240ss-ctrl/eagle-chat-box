@@ -5,7 +5,11 @@ const SYS = "You are Eagle AI, a friendly, sharp assistant. Reply in the user's 
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+
+// --- static files (files are in repo root, so only these are served) ---
+const send = f => (q, r) => r.sendFile(path.join(__dirname, f));
+app.get('/', send('index.html'));
+['index.html', 'manifest.json', 'icon-192.png', 'icon-512.png'].forEach(f => app.get('/' + f, send(f)));
 
 // --- signed session tokens (30 days) ---
 const sign = p => { const d = Buffer.from(JSON.stringify(p)).toString('base64url'); return d + '.' + crypto.createHmac('sha256', SS).update(d).digest('base64url'); };
@@ -27,6 +31,9 @@ const fb = async (ep, body) => { const r = await fetch(`https://identitytoolkit.
 const FBMSG = { EMAIL_EXISTS: 'Email already registered. Login pannu.', INVALID_LOGIN_CREDENTIALS: 'Email illa password thappu machi.', INVALID_PASSWORD: 'Email illa password thappu machi.', EMAIL_NOT_FOUND: 'Email illa password thappu machi.', WEAK_PASSWORD: 'Password minimum 6 characters.', INVALID_EMAIL: 'Valid email kudu.', TOO_MANY_ATTEMPTS_TRY_LATER: 'Romba attempts, konjam neram kazhichu try pannu.', OPERATION_NOT_ALLOWED: 'Firebase-la Email/Password sign-in enable pannala.' };
 const fail = (res, e) => res.status(400).json({ error: FBMSG[e.message] || 'Etho problem aachu, marubadi try pannu.' });
 
+// public web key for the browser's Google sign-in (not a secret)
+app.get('/api/config', need('FIREBASE_API_KEY'), (q, r) => r.json({ apiKey: FK }));
+
 app.post('/api/signup', need('FIREBASE_API_KEY', 'SESSION_SECRET'), async (req, res) => {
   try { const name = String(req.body.name || '').trim().slice(0, 60), email = String(req.body.email || '').trim().toLowerCase(), password = String(req.body.password || '');
     if (!name) return res.status(400).json({ error: 'Name kudu machi.' });
@@ -38,6 +45,12 @@ app.post('/api/login', need('FIREBASE_API_KEY', 'SESSION_SECRET'), async (req, r
   try { const email = String(req.body.email || '').trim().toLowerCase();
     const j = await fb('signInWithPassword', { email, password: String(req.body.password || ''), returnSecureToken: true });
     res.json(issue(j.displayName || email.split('@')[0], email)); } catch (e) { fail(res, e); } });
+
+// Google sign-in: browser sends the Firebase idToken, server verifies it with Firebase
+app.post('/api/google', need('FIREBASE_API_KEY', 'SESSION_SECRET'), async (req, res) => {
+  try { const j = await fb('lookup', { idToken: String(req.body.idToken || '') }), u = j.users && j.users[0];
+    if (!u || !u.email) throw new Error('INVALID');
+    res.json(issue(u.displayName || u.email.split('@')[0], u.email.toLowerCase())); } catch (e) { fail(res, e); } });
 
 app.post('/api/guest', need('SESSION_SECRET'), (req, res) => res.json(issue('Guest', 'guest')));
 
