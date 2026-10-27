@@ -1,8 +1,8 @@
 const express = require('express'), crypto = require('crypto'), path = require('path');
 const { ANTHROPIC_API_KEY: AK, FIREBASE_API_KEY: FK, SESSION_SECRET: SS } = process.env;
 const MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-5-5';
-const GK = process.env.GEMINI_API_KEY, GM = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite'; // free option: if GEMINI_API_KEY is set, chat uses Gemini
-const SYS = "You are Eagle AI, a friendly, sharp assistant. Reply in the user's language. If they write Tanglish (Tamil in English letters), reply in casual Tanglish with a warm 'machi' vibe. Keep answers short.";
+const GK = process.env.GEMINI_API_KEY, GM = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'; // free option: if GEMINI_API_KEY is set, chat uses Gemini
+const SYS = "You are Eagle AI, a friendly and knowledgeable assistant. Give accurate, clear and complete answers: explain properly with simple steps or examples when the topic needs it, and keep it brief only for simple questions. Reply in the same language the user writes: English question -> English answer, Tamil -> Tamil, Tanglish (Tamil in English letters) -> casual Tanglish. If you are not sure about something, say so instead of guessing, and never invent facts.";
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));
@@ -62,12 +62,12 @@ app.post('/api/chat', need(GK ? 'GEMINI_API_KEY' : 'ANTHROPIC_API_KEY', 'SESSION
     messages = messages.slice(-30).map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content).slice(0, 8000) }));
     if (GK) {
       const gr = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GM}:generateContent`, { method: 'POST', headers: { 'x-goog-api-key': GK, 'content-type': 'application/json' },
-        body: JSON.stringify({ ...(raw ? {} : { systemInstruction: { parts: [{ text: SYS }] } }), contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: Math.min(+max_tokens || 1024, 4096) } }) });
+        body: JSON.stringify({ ...(raw ? {} : { systemInstruction: { parts: [{ text: SYS }] } }), contents: messages.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })), generationConfig: { maxOutputTokens: Math.min(+max_tokens || 2048, 4096) } }) });
       const gj = await gr.json(); if (!gr.ok) { console.error('Gemini', gr.status, gj); return res.status(502).json({ error: gr.status === 429 ? 'Romba fast machi, oru nimisham wait pannu.' : 'AI busy machi, marubadi try pannu.' }); }
       const parts = (gj.candidates && gj.candidates[0] && gj.candidates[0].content && gj.candidates[0].content.parts) || [];
       return res.json({ text: parts.map(p => p.text || '').join('') || 'Pathil kidaikkala machi, vera maadhiri kelu.' });
     }
-    const body = { model: MODEL, max_tokens: Math.min(+max_tokens || 1024, 4096), messages }; if (!raw) body.system = SYS;
+    const body = { model: MODEL, max_tokens: Math.min(+max_tokens || 2048, 4096), messages }; if (!raw) body.system = SYS;
     const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': AK, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json(); if (!r.ok) { console.error('Anthropic', r.status, j); return res.status(502).json({ error: 'AI busy machi, marubadi try pannu.' }); }
     res.json({ text: j.content.filter(c => c.type === 'text').map(c => c.text).join('') });
